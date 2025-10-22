@@ -1,0 +1,280 @@
+<!--
+README (keep in file for convenience)
+
+This project lets you publish posts to a Telegram channel from a simple web page.
+Secure design: the browser talks to YOUR serverless backend; the backend talks to Telegram Bot API using a secret BOT token.
+You can deploy the frontend on GitHub Pages and the backend on Vercel or Cloudflare Workers.
+
+Quick Start (Vercel):
+1) Create a Telegram bot with @BotFather → copy the token.
+2) Add the bot as an admin to your channel (or use a private chat_id). Make sure it can Post Messages.
+3) Fork this as a tiny repo (or copy files). For Vercel, add the file at /api/post.ts from below.
+4) In Vercel project settings → Environment Variables, set:
+   - TG_BOT_TOKEN = 123456:ABC... (your token)
+   - TG_DEFAULT_CHAT_ID = @yourchannel (or numeric ID like -1001234567890)
+   - ADMIN_KEY = any long secret you invent (e.g., a UUID). Example: 8c8ef3e4-3caa-4a7f-8c3b-b1d8f71c6c5a
+5) Deploy. You'll get an endpoint like https://your-app.vercel.app/api/post
+6) Host this index.html on GitHub Pages (or on the same Vercel project). In the form below, set BACKEND_URL accordingly.
+7) Open the page, paste ADMIN_KEY, write a post, click Publish → it lands in your channel.
+
+Alternative backend: Cloudflare Workers code is provided below too.
+
+Security notes:
+- Never expose your bot token in frontend code or GitHub. Keep it server-side only.
+- ADMIN_KEY protects your endpoint from public abuse. Keep it secret and rotate if leaked.
+- Optionally lock the backend to one chat_id by not allowing overrides (commented in code).
+
+Supported features out of the box:
+- sendMessage (text) with Markdown/HTML
+- sendPhoto (if you provide an image URL)
+- Optional "silent" (disable_notification)
+- Optional custom chat_id override (if enabled)
+- Basic error display
+
+Advanced ideas (not included but easy to add):
+- Scheduling with CRON (Vercel cron / Cloudflare Cron Triggers)
+- sendVideo, sendDocument, buttons (InlineKeyboardMarkup)
+- Rate limiting, CORS allowlist
+
+--><!doctype html>
+
+<html lang="ru" class="h-full bg-slate-900">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Постинг в Telegram</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="h-full text-slate-100">
+  <div class="max-w-3xl mx-auto p-6">
+    <header class="mb-6">
+      <h1 class="text-2xl font-bold">Публикация постов в Telegram</h1>
+      <p class="text-sm text-slate-400">Через бота и ваш серверless-бэкенд. Токен нигде не светится.</p>
+    </header><section class="space-y-4 bg-slate-800/50 p-4 rounded-2xl shadow">
+  <div class="grid md:grid-cols-2 gap-4">
+    <label class="block">
+      <span class="text-sm text-slate-300">Backend URL</span>
+      <input id="backendUrl" type="url" placeholder="https://your-app.vercel.app/api/post" class="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 outline-none ring-1 ring-slate-700 focus:ring-sky-400" />
+    </label>
+    <label class="block">
+      <span class="text-sm text-slate-300">ADMIN_KEY</span>
+      <input id="adminKey" type="password" placeholder="Ваш секретный ключ" class="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 outline-none ring-1 ring-slate-700 focus:ring-sky-400" />
+    </label>
+  </div>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <label class="block">
+      <span class="text-sm text-slate-300">Чат/Канал (необязательно)</span>
+      <input id="chatId" type="text" placeholder="@yourchannel или -1001234567890" class="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 outline-none ring-1 ring-slate-700 focus:ring-sky-400" />
+      <span class="text-xs text-slate-500">Если пусто — используется TG_DEFAULT_CHAT_ID на сервере.</span>
+    </label>
+    <label class="block">
+      <span class="text-sm text-slate-300">Режим форматирования</span>
+      <select id="parseMode" class="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 outline-none ring-1 ring-slate-700 focus:ring-sky-400">
+        <option value="">Без форматирования</option>
+        <option value="MarkdownV2">MarkdownV2</option>
+        <option value="Markdown">Markdown</option>
+        <option value="HTML">HTML</option>
+      </select>
+    </label>
+  </div>
+
+  <label class="block">
+    <span class="text-sm text-slate-300">Текст поста</span>
+    <textarea id="text" rows="6" placeholder="Ваш текст..." class="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 outline-none ring-1 ring-slate-700 focus:ring-sky-400"></textarea>
+  </label>
+
+  <div class="grid md:grid-cols-2 gap-4">
+    <label class="block">
+      <span class="text-sm text-slate-300">URL изображения (необязательно)</span>
+      <input id="photoUrl" type="url" placeholder="https://.../image.jpg" class="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 outline-none ring-1 ring-slate-700 focus:ring-sky-400" />
+      <span class="text-xs text-slate-500">Если указано — отправится фото с подписью.</span>
+    </label>
+    <label class="inline-flex items-center gap-2 mt-7">
+      <input id="silent" type="checkbox" class="rounded bg-slate-900 ring-1 ring-slate-700" />
+      <span class="text-sm text-slate-300">Тихая отправка (без звука)</span>
+    </label>
+  </div>
+
+  <div class="flex items-center gap-3 pt-2">
+    <button id="submitBtn" class="rounded-2xl px-4 py-2 bg-sky-500 hover:bg-sky-400 text-slate-900 font-semibold">Опубликовать</button>
+    <span id="status" class="text-sm text-slate-400"></span>
+  </div>
+</section>
+
+<footer class="mt-6 text-xs text-slate-500">
+  Сделано для быстрого старта. Исходники: index.html (эта страница), /api/post.ts (Vercel) или Cloudflare Worker ниже.
+</footer>
+
+  </div>  <script>
+    const el = (id) => document.getElementById(id);
+
+    async function publish() {
+      const backendUrl = el('backendUrl').value.trim();
+      const adminKey = el('adminKey').value.trim();
+      const text = el('text').value;
+      const chat_id = el('chatId').value.trim();
+      const parse_mode = el('parseMode').value || undefined;
+      const photo = el('photoUrl').value.trim();
+      const disable_notification = el('silent').checked;
+
+      if (!backendUrl) {
+        el('status').textContent = 'Укажите Backend URL';
+        return;
+      }
+      if (!adminKey) {
+        el('status').textContent = 'Введите ADMIN_KEY';
+        return;
+      }
+      if (!text && !photo) {
+        el('status').textContent = 'Нужен текст или изображение';
+        return;
+      }
+
+      el('status').textContent = 'Отправка...';
+      el('submitBtn').disabled = true;
+
+      try {
+        const res = await fetch(backendUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            admin_key: adminKey,
+            chat_id: chat_id || undefined,
+            text,
+            parse_mode,
+            photo,
+            disable_notification
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Неизвестная ошибка');
+        el('status').textContent = 'Готово ✅';
+      } catch (e) {
+        el('status').textContent = 'Ошибка: ' + e.message;
+      } finally {
+        el('submitBtn').disabled = false;
+      }
+    }
+
+    document.getElementById('submitBtn').addEventListener('click', publish);
+  </script></body>
+</html><!-- ========================= VERCEL BACKEND (api/post.ts) =========================
+Create a file at /api/post.ts in a Vercel project (framework: Node). TypeScript or JS both fine.
+--><script type="text/plain" data-filename="/api/post.ts">
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const ADMIN_KEY = process.env.ADMIN_KEY;
+  const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
+  const TG_DEFAULT_CHAT_ID = process.env.TG_DEFAULT_CHAT_ID; // like @yourchannel or -100123...
+
+  if (!ADMIN_KEY || !TG_BOT_TOKEN || !TG_DEFAULT_CHAT_ID) {
+    return res.status(500).json({ error: 'Server is not configured. Missing env vars.' });
+  }
+
+  const { admin_key, chat_id, text, parse_mode, photo, disable_notification } = req.body || {};
+
+  if (admin_key !== ADMIN_KEY) return res.status(401).json({ error: 'Unauthorized' });
+
+  // Optional: lock to default chat only
+  const targetChat = chat_id && String(chat_id).trim().length ? chat_id : TG_DEFAULT_CHAT_ID;
+  // const targetChat = TG_DEFAULT_CHAT_ID; // ← uncomment to disable overrides entirely
+
+  try {
+    const apiBase = `https://api.telegram.org/bot${TG_BOT_TOKEN}`;
+    let endpoint = '/sendMessage';
+    let payload: any = { chat_id: targetChat, disable_notification: !!disable_notification };
+
+    if (photo) {
+      endpoint = '/sendPhoto';
+      payload.photo = photo;
+      if (text) payload.caption = text;
+      if (parse_mode) payload.parse_mode = parse_mode;
+    } else {
+      payload.text = text || '';
+      if (parse_mode) payload.parse_mode = parse_mode;
+    }
+
+    const resp = await fetch(apiBase + endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await resp.json();
+    if (!data.ok) {
+      return res.status(400).json({ error: data.description || 'Telegram API error' });
+    }
+
+    return res.status(200).json({ ok: true, result: data.result });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Internal error' });
+  }
+}
+</script><!-- ========================= CLOUDFLARE WORKER (worker.js) =========================
+Deploy on Cloudflare Workers. Set secrets via wrangler:
+  wrangler secret put TG_BOT_TOKEN
+  wrangler secret put TG_DEFAULT_CHAT_ID
+  wrangler secret put ADMIN_KEY
+--><script type="text/plain" data-filename="/worker.js">
+export default {
+  async fetch(request, env) {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'content-type': 'application/json' } });
+    }
+
+    const ADMIN_KEY = env.ADMIN_KEY;
+    const TG_BOT_TOKEN = env.TG_BOT_TOKEN;
+    const TG_DEFAULT_CHAT_ID = env.TG_DEFAULT_CHAT_ID;
+
+    if (!ADMIN_KEY || !TG_BOT_TOKEN || !TG_DEFAULT_CHAT_ID) {
+      return new Response(JSON.stringify({ error: 'Worker not configured' }), { status: 500, headers: { 'content-type': 'application/json' } });
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const { admin_key, chat_id, text, parse_mode, photo, disable_notification } = body;
+
+    if (admin_key !== ADMIN_KEY) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'content-type': 'application/json' } });
+    }
+
+    const targetChat = chat_id && String(chat_id).trim().length ? chat_id : TG_DEFAULT_CHAT_ID;
+    // const targetChat = TG_DEFAULT_CHAT_ID; // lock to default chat
+
+    const apiBase = `https://api.telegram.org/bot${TG_BOT_TOKEN}`;
+    let endpoint = '/sendMessage';
+    let payload = { chat_id: targetChat, disable_notification: !!disable_notification };
+
+    if (photo) {
+      endpoint = '/sendPhoto';
+      payload = { ...payload, photo };
+      if (text) payload = { ...payload, caption: text };
+      if (parse_mode) payload = { ...payload, parse_mode };
+    } else {
+      payload = { ...payload, text: text || '' };
+      if (parse_mode) payload = { ...payload, parse_mode };
+    }
+
+    const resp = await fetch(apiBase + endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await resp.json();
+    if (!data.ok) {
+      return new Response(JSON.stringify({ error: data.description || 'Telegram API error' }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+
+    return new Response(JSON.stringify({ ok: true, result: data.result }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+};
+</script><!-- ========================= wrangler.toml (for Cloudflare) ========================= --><script type="text/plain" data-filename="/wrangler.toml">
+name = "tg-post-site"
+main = "worker.js"
+compatibility_date = "2025-10-22"
+
+[vars]
+# Optional non-secret, but keep secrets via wrangler secret
+</script>
